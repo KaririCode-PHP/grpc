@@ -4,138 +4,70 @@ declare(strict_types=1);
 
 namespace KaririCode\Grpc\Tests\Unit\Handler;
 
-use KaririCode\Grpc\Contract\Interceptor;
 use KaririCode\Grpc\Handler\InterceptorPipeline;
 use KaririCode\Grpc\Message\GrpcRequest;
 use KaririCode\Grpc\Message\GrpcResponse;
-use KaririCode\Grpc\Message\Metadata;
+use KaririCode\Grpc\Message\Status;
+use KaririCode\Grpc\Tests\Support\CallbackInterceptor;
+use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 
+#[CoversClass(InterceptorPipeline::class)]
 final class InterceptorPipelineTest extends TestCase
 {
-    public function testEmptyPipeline(): void
+    #[Test]
+    public function theFirstInterceptorIsTheOutermost(): void
     {
-        $pipeline = new InterceptorPipeline();
-        self::assertTrue($pipeline->isEmpty());
-        self::assertSame(0, $pipeline->count());
+        /** @var \ArrayObject<int, string> $trace */
+        $trace = new \ArrayObject();
+        $step = static fn(string $name): CallbackInterceptor => new CallbackInterceptor(static function (GrpcRequest $request, \Closure $next) use ($trace, $name): GrpcResponse {
+            $trace[] = $name . ' in';
+            $response = $next($request->withMessage($request->message . $name));
+            $trace[] = $name . ' out';
+
+            return $response->withMessage($response->message . '<' . $name);
+        });
+        $pipeline = (new InterceptorPipeline())->with($step('a'))->with($step('b'));
+
+        $response = $pipeline->process(new GrpcRequest('a.B', 'C', '>'), static function (GrpcRequest $request) use ($trace): GrpcResponse {
+            $trace[] = 'handler';
+
+            return GrpcResponse::ok($request->message);
+        });
+
+        self::assertSame(['a in', 'b in', 'handler', 'b out', 'a out'], $trace->getArrayCopy());
+        self::assertSame('>ab<b<a', $response->message);
+        self::assertCount(2, $pipeline);
+        self::assertFalse($pipeline->isEmpty());
     }
 
-    public function testPassesThroughToHandler(): void
+    #[Test]
+    public function anInterceptorCanAnswerWithoutTheHandler(): void
     {
-        $pipeline = new InterceptorPipeline();
-        $request = new GrpcRequest('svc', 'Method', ['id' => 1]);
+        /** @var \ArrayObject<int, bool> $handled */
+        $handled = new \ArrayObject();
+        $pipeline = new InterceptorPipeline([new CallbackInterceptor(static fn(): GrpcResponse => GrpcResponse::error(Status::unauthenticated()))]);
 
-        $response = $pipeline->process($request, fn (GrpcRequest $r) => GrpcResponse::ok($r->payload));
+        $response = $pipeline->process(new GrpcRequest('a.B', 'C'), static function () use ($handled): GrpcResponse {
+            $handled[] = true;
 
-        self::assertTrue($response->isOk());
-        self::assertSame(['id' => 1], $response->payload);
-    }
+            return GrpcResponse::ok();
+        });
 
-    public function testInterceptorModifiesRequest(): void
-    {
-        $interceptor = new class implements Interceptor {
-            public function intercept(GrpcRequest $request, callable $next): GrpcResponse
-            {
-                return $next($request->withMetadata(
-                    $request->metadata->withValue('injected', 'yes'),
-                ));
-            }
-        };
-
-        $pipeline = new InterceptorPipeline();
-        $pipeline->pipe($interceptor);
-
-        $captured = null;
-        $pipeline->process(
-            new GrpcRequest('svc', 'M'),
-            function (GrpcRequest $r) use (&$captured) {
-                $captured = $r;
-                return GrpcResponse::ok();
-            },
-        );
-
-        self::assertSame('yes', $captured->metadata->get('injected'));
-    }
-
-    public function testInterceptorModifiesResponse(): void
-    {
-        $interceptor = new class implements Interceptor {
-            public function intercept(GrpcRequest $request, callable $next): GrpcResponse
-            {
-                $response = $next($request);
-                return $response->withHeaders(new Metadata(['x-trace-id' => 'abc']));
-            }
-        };
-
-        $pipeline = new InterceptorPipeline();
-        $pipeline->pipe($interceptor);
-
-        $response = $pipeline->process(
-            new GrpcRequest('svc', 'M'),
-            fn () => GrpcResponse::ok(),
-        );
-
-        self::assertSame('abc', $response->headers->get('x-trace-id'));
-    }
-
-    public function testOrderIsInsideOut(): void
-    {
-        $order = [];
-
-        $makeInterceptor = fn (string $name) => new class($name, $order) implements Interceptor {
-            public function __construct(private string $name, private array &$order) {}
-            public function intercept(GrpcRequest $request, callable $next): GrpcResponse
-            {
-                $this->order[] = "{$this->name}:before";
-                $response = $next($request);
-                $this->order[] = "{$this->name}:after";
-                return $response;
-            }
-        };
-
-        $pipeline = new InterceptorPipeline();
-        $pipeline->pipe($makeInterceptor('A'));
-        $pipeline->pipe($makeInterceptor('B'));
-
-        $pipeline->process(new GrpcRequest('svc', 'M'), fn () => GrpcResponse::ok());
-
-        self::assertSame(['A:before', 'B:before', 'B:after', 'A:after'], $order);
-    }
-
-    public function testShortCircuit(): void
-    {
-        $interceptor = new class implements Interceptor {
-            public function intercept(GrpcRequest $request, callable $next): GrpcResponse
-            {
-                return GrpcResponse::error(\KaririCode\Grpc\Message\Status::unauthenticated());
-            }
-        };
-
-        $pipeline = new InterceptorPipeline();
-        $pipeline->pipe($interceptor);
-
-        $handlerCalled = false;
-        $response = $pipeline->process(
-            new GrpcRequest('svc', 'M'),
-            function () use (&$handlerCalled) {
-                $handlerCalled = true;
-                return GrpcResponse::ok();
-            },
-        );
-
-        self::assertFalse($handlerCalled);
         self::assertFalse($response->isOk());
+        self::assertCount(0, $handled);
     }
 
-    public function testPipeReturnsSelf(): void
+    #[Test]
+    public function withReturnsANewPipeline(): void
     {
-        $pipeline = new InterceptorPipeline();
-        $interceptor = new class implements Interceptor {
-            public function intercept(GrpcRequest $r, callable $n): GrpcResponse { return $n($r); }
-        };
+        $empty = new InterceptorPipeline();
+        $one = $empty->with(new CallbackInterceptor(static fn(GrpcRequest $request, \Closure $next): GrpcResponse => $next($request)));
 
-        $result = $pipeline->pipe($interceptor);
-        self::assertSame($pipeline, $result);
-        self::assertSame(1, $pipeline->count());
+        self::assertTrue($empty->isEmpty());
+        self::assertCount(0, $empty);
+        self::assertCount(1, $one);
+        self::assertSame('m', $empty->process(new GrpcRequest('a.B', 'C', 'm'), static fn(GrpcRequest $request): GrpcResponse => GrpcResponse::ok($request->message))->message);
     }
 }

@@ -5,60 +5,47 @@ declare(strict_types=1);
 namespace KaririCode\Grpc\Tests\Unit\Integration;
 
 use KaririCode\Grpc\Enum\CallType;
+use KaririCode\Grpc\Exception\GrpcCode;
+use KaririCode\Grpc\Exception\UnsupportedRequestException;
 use KaririCode\Grpc\Integration\GrpcNormalizer;
 use KaririCode\Grpc\Message\GrpcRequest;
+use KaririCode\Router\Core\RouteRegistry;
+use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 
+#[CoversClass(GrpcNormalizer::class)]
 final class GrpcNormalizerTest extends TestCase
 {
-    private GrpcNormalizer $normalizer;
-
-    protected function setUp(): void
+    #[Test]
+    public function aCallIsRoutedByCallTypeAndPath(): void
     {
-        $this->normalizer = new GrpcNormalizer();
+        $routes = (new RouteRegistry())
+            ->route([CallType::Unary->routerMethod()], '/shop.Cart/AddItem', 'add')
+            ->route([CallType::ServerStreaming->routerMethod()], '/shop.Cart/Watch', 'watch');
+        $normalizer = new GrpcNormalizer();
+        $unary = new GrpcRequest('shop.Cart', 'AddItem');
+        $stream = new GrpcRequest('shop.Cart', 'Watch', callType: CallType::ServerStreaming);
+
+        $request = $normalizer->normalize($unary);
+
+        self::assertTrue($normalizer->canNormalize($unary));
+        self::assertFalse($normalizer->canNormalize(new \stdClass()));
+        self::assertSame('UNARY', $request->method);
+        self::assertSame('/shop.Cart/AddItem', $request->uri);
+        self::assertSame($unary, $request->original);
+        self::assertSame('add', $routes->match($request->method, $request->uri)->handler());
+        self::assertSame('watch', $routes->match($normalizer->normalize($stream)->method, $normalizer->normalize($stream)->uri)->handler());
     }
 
-    public function testCanNormalizeGrpcRequest(): void
+    #[Test]
+    public function normalizingSomethingElseIsAWiringError(): void
     {
-        self::assertTrue($this->normalizer->canNormalize(new GrpcRequest('svc', 'M')));
-    }
-
-    public function testCannotNormalizeOtherObjects(): void
-    {
-        self::assertFalse($this->normalizer->canNormalize(new \stdClass()));
-    }
-
-    public function testNormalizeUnary(): void
-    {
-        $request = new GrpcRequest('myapp.v1.UserService', 'GetUser');
-        $normalized = $this->normalizer->normalize($request);
-
-        self::assertSame('UNARY', $normalized->method);
-        self::assertSame('/myapp.v1.UserService/GetUser', $normalized->uri);
-        self::assertSame($request, $normalized->original);
-    }
-
-    public function testNormalizeServerStream(): void
-    {
-        $request = new GrpcRequest('svc', 'List', callType: CallType::ServerStreaming);
-        $normalized = $this->normalizer->normalize($request);
-
-        self::assertSame('SERVER_STREAM', $normalized->method);
-    }
-
-    public function testNormalizeClientStream(): void
-    {
-        $request = new GrpcRequest('svc', 'Upload', callType: CallType::ClientStreaming);
-        $normalized = $this->normalizer->normalize($request);
-
-        self::assertSame('CLIENT_STREAM', $normalized->method);
-    }
-
-    public function testNormalizeBidiStream(): void
-    {
-        $request = new GrpcRequest('svc', 'Chat', callType: CallType::BidiStreaming);
-        $normalized = $this->normalizer->normalize($request);
-
-        self::assertSame('BIDI_STREAM', $normalized->method);
+        try {
+            (new GrpcNormalizer())->normalize(new \stdClass());
+            self::fail('a non-request was normalised');
+        } catch (UnsupportedRequestException $e) {
+            self::assertSame(GrpcCode::NotAGrpcRequest, $e->errorCode);
+        }
     }
 }
