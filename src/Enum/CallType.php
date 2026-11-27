@@ -5,72 +5,48 @@ declare(strict_types=1);
 namespace KaririCode\Grpc\Enum;
 
 /**
- * gRPC call types (RPC cardinality).
+ * The four kinds of gRPC call, by how many messages each side sends. The
+ * value is the pseudo-method a router matches (GrpcNormalizer), so one
+ * route table can hold unary and streaming methods apart.
  *
- * ARFA 1.3 P1 (Immutable State Transformation): enum cases are
- * inherently immutable value types.
+ * ARFA 1.3: P4 (call kinds as router methods). Spec V4.3.3: a backed enum
+ * for a value that leaves the package (E-003).
  *
- * ARFA 1.3 P4 (Protocol Agnosticism): each call type maps to an
- * uppercase string used as the Router method key — enabling unified
- * route registration for gRPC alongside HTTP/WebSocket/SSE.
+ * Preconditions: none.
  *
- * Spec V4.0 §2.1: pure enum.
+ * Thread-safety: enum cases are immutable.
+ *
+ * Side effects: none.
+ *
+ * Example:
+ *
+ *     $routes->route([CallType::Unary->routerMethod()], '/shop.Cart/AddItem', AddItem::class);
+ *     CallType::ServerStreaming->isSingleRequest();   // true: one request, many responses
+ *
+ * References: gRPC concepts (RPC life cycle); kariricode/router
+ * NormalizedRequest; ADR-001.
  *
  * @see https://grpc.io/docs/what-is-grpc/core-concepts/#rpc-life-cycle
  */
-enum CallType
+enum CallType: string
 {
-    case Unary;
-    case ServerStreaming;
-    case ClientStreaming;
-    case BidiStreaming;
+    case Unary = 'UNARY';
+    case ServerStreaming = 'SERVER_STREAM';
+    case ClientStreaming = 'CLIENT_STREAM';
+    case BidiStreaming = 'BIDI_STREAM';
 
-    /**
-     * The Router method string for route registration.
-     *
-     * Convention: uppercase string matching the gRPC call pattern.
-     * Example: $router->route('UNARY', '/myapp.UserService/GetUser', ...)
-     */
     public function routerMethod(): string
     {
-        return match ($this) {
-            self::Unary           => 'UNARY',
-            self::ServerStreaming  => 'SERVER_STREAM',
-            self::ClientStreaming  => 'CLIENT_STREAM',
-            self::BidiStreaming    => 'BIDI_STREAM',
-        };
+        return $this->value;
     }
 
-    /**
-     * Whether this call type receives a single request message.
-     */
     public function isSingleRequest(): bool
     {
-        return match ($this) {
-            self::Unary, self::ServerStreaming => true,
-            self::ClientStreaming, self::BidiStreaming => false,
-        };
+        return $this === self::Unary || $this === self::ServerStreaming;
     }
 
-    /**
-     * Whether this call type sends a single response message.
-     */
     public function isSingleResponse(): bool
     {
-        return match ($this) {
-            self::Unary, self::ClientStreaming => true,
-            self::ServerStreaming, self::BidiStreaming => false,
-        };
-    }
-
-    public static function fromRouterMethod(string $method): ?self
-    {
-        return match (strtoupper($method)) {
-            'UNARY'         => self::Unary,
-            'SERVER_STREAM' => self::ServerStreaming,
-            'CLIENT_STREAM' => self::ClientStreaming,
-            'BIDI_STREAM'   => self::BidiStreaming,
-            default         => null,
-        };
+        return $this === self::Unary || $this === self::ClientStreaming;
     }
 }

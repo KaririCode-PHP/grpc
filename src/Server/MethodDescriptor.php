@@ -5,39 +5,54 @@ declare(strict_types=1);
 namespace KaririCode\Grpc\Server;
 
 use KaririCode\Grpc\Enum\CallType;
+use KaririCode\Grpc\Exception\InvalidConfigurationException;
+use KaririCode\Grpc\Message\GrpcRequest;
 
 /**
- * Immutable descriptor for a single gRPC method.
+ * One method of a service, as its .proto declares it: the service, the
+ * method and the kind of call. Registering descriptors with a service lets
+ * the dispatcher refuse unknown methods and streaming calls before any
+ * application code runs.
  *
- * ARFA 1.3 P1 (Immutable State Transformation): final readonly class.
+ * ARFA 1.3: P1 (immutable description). Spec V4.3.3: final readonly.
  *
- * Spec V4.0: pure data carrier with no behavior beyond accessors.
+ * Preconditions: $serviceName is dot-separated identifiers (1941),
+ * $methodName one identifier (1942).
  *
- * Holds metadata about an RPC method: its name, call type, and the
- * fully qualified gRPC path used for routing.
+ * Thread-safety: immutable; safe to share.
  *
- * @see https://grpc.io/docs/what-is-grpc/core-concepts/#service-definition
+ * Side effects: none.
+ *
+ * Example:
+ *
+ *     new MethodDescriptor('shop.Cart', 'AddItem');                          // "/shop.Cart/AddItem"
+ *     new MethodDescriptor('shop.Cart', 'Watch', CallType::ServerStreaming);
+ *
+ * References: Protocol Buffers language guide (services); gRPC over HTTP/2
+ * (Path); ADR-001.
+ *
+ * @see https://protobuf.dev/programming-guides/proto3/#services
  */
 final readonly class MethodDescriptor
 {
     public string $fullPath;
 
-    /**
-     * @param string   $serviceName Fully qualified service name (e.g. "myapp.v1.UserService")
-     * @param string   $methodName  RPC method name (e.g. "GetUser")
-     * @param CallType $callType    RPC cardinality
-     */
     public function __construct(
         public string $serviceName,
         public string $methodName,
         public CallType $callType = CallType::Unary,
     ) {
-        $this->fullPath = "/{$serviceName}/{$methodName}";
+        if (preg_match(GrpcRequest::SERVICE_PATTERN, $serviceName) !== 1) {
+            throw InvalidConfigurationException::invalidDescriptorService($serviceName);
+        }
+
+        if (preg_match(GrpcRequest::METHOD_PATTERN, $methodName) !== 1) {
+            throw InvalidConfigurationException::invalidDescriptorMethod($methodName);
+        }
+
+        $this->fullPath = '/' . $serviceName . '/' . $methodName;
     }
 
-    /**
-     * The Router method string for this descriptor's call type.
-     */
     public function routerMethod(): string
     {
         return $this->callType->routerMethod();

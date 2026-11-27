@@ -8,28 +8,43 @@ use KaririCode\Grpc\Message\GrpcRequest;
 use KaririCode\Grpc\Message\GrpcResponse;
 
 /**
- * gRPC server interceptor (middleware equivalent).
+ * A step around every call: it can read or replace the request, answer
+ * without calling $next (an authentication failure), or read or replace
+ * the response. Handler\InterceptorPipeline runs the steps in order, the
+ * first outermost.
  *
- * ARFA 1.3 P2 (Reactive Flow Composition): interceptors compose
- * into an inside-out pipeline identical to HTTP middleware (PSR-15).
- * Each interceptor can inspect/modify the request, delegate to the
- * next handler, and inspect/modify the response.
+ * ARFA 1.3: P2 (a stage of the call). Spec V4.3.3: an interface; $next is
+ * a typed Closure.
  *
- * Spec V4.0 §1.3: interface without "Interface" suffix.
+ * Preconditions: an interceptor calls $next at most once, and returns a
+ * response either way. To end a call from deep inside, it may throw
+ * KaririCode\Grpc\Exception\StatusException.
  *
- * Common use cases: authentication, logging, rate-limiting,
- * tracing (OpenTelemetry), deadline enforcement, validation.
+ * Thread-safety: an interceptor is shared by every call; it keeps no
+ * per-call state in properties.
+ *
+ * Side effects: those of the implementation.
+ *
+ * Example:
+ *
+ *     final class RequireApiKey implements Interceptor
+ *     {
+ *         public function intercept(GrpcRequest $request, \Closure $next): GrpcResponse
+ *         {
+ *             return $request->metadata->get('x-api-key') === $this->key
+ *                 ? $next($request)
+ *                 : GrpcResponse::error(Status::unauthenticated());
+ *         }
+ *     }
+ *
+ * References: gRPC interceptors (grpc-go, grpc-java); ADR-001.
  *
  * @see https://grpc.io/docs/guides/interceptors/
  */
 interface Interceptor
 {
     /**
-     * Process a gRPC request and produce a response.
-     *
-     * @param GrpcRequest $request  The incoming RPC request
-     * @param callable(GrpcRequest): GrpcResponse $next Next interceptor or final handler
-     * @return GrpcResponse
+     * @param \Closure(GrpcRequest): GrpcResponse $next the rest of the pipeline
      */
-    public function intercept(GrpcRequest $request, callable $next): GrpcResponse;
+    public function intercept(GrpcRequest $request, \Closure $next): GrpcResponse;
 }

@@ -9,39 +9,51 @@ use KaririCode\Grpc\Message\GrpcRequest;
 use KaririCode\Grpc\Message\GrpcResponse;
 
 /**
- * Inside-out interceptor pipeline for gRPC requests.
+ * The interceptors every call passes through, in order: the first is the
+ * outermost, so it sees the request first and the response last. with()
+ * returns a new pipeline, so one built at bootstrap can be shared.
  *
- * ARFA 1.3 P2 (Reactive Flow Composition): composes interceptors
- * into a single callable, identical to PSR-15 middleware dispatch
- * but typed for gRPC request/response.
+ * ARFA 1.3: P1 (immutable), P2 (onion-model composition). Spec V4.3.3:
+ * final readonly.
  *
- * Spec V4.0: final class.
+ * Preconditions: none.
+ *
+ * Thread-safety: immutable; safe to share.
+ *
+ * Side effects: those of the interceptors and the handler.
+ *
+ * Example:
+ *
+ *     $pipeline = (new InterceptorPipeline())
+ *         ->with(new MutualTlsInterceptor($tls))   // outermost
+ *         ->with(new RequestLogger($logger));
+ *     $response = $pipeline->process($request, $handler);
+ *
+ * References: gRPC interceptors; ADR-001.
  *
  * @see https://grpc.io/docs/guides/interceptors/
  */
-final class InterceptorPipeline
+final readonly class InterceptorPipeline implements \Countable
 {
-    /** @var list<Interceptor> */
-    private array $interceptors = [];
+    /**
+     * @param list<Interceptor> $interceptors the outermost first
+     */
+    public function __construct(private array $interceptors = []) {}
 
-    public function pipe(Interceptor $interceptor): self
+    public function with(Interceptor $interceptor): self
     {
-        $this->interceptors[] = $interceptor;
-        return $this;
+        return new self([...$this->interceptors, $interceptor]);
     }
 
     /**
-     * Execute the pipeline with a final handler.
-     *
-     * @param callable(GrpcRequest): GrpcResponse $handler The service method handler
+     * @param \Closure(GrpcRequest): GrpcResponse $handler the step after the last interceptor
      */
-    public function process(GrpcRequest $request, callable $handler): GrpcResponse
+    public function process(GrpcRequest $request, \Closure $handler): GrpcResponse
     {
-        // Build from inside-out: last piped = outermost
         $next = $handler;
 
         foreach (array_reverse($this->interceptors) as $interceptor) {
-            $next = static fn (GrpcRequest $req): GrpcResponse => $interceptor->intercept($req, $next);
+            $next = static fn(GrpcRequest $request): GrpcResponse => $interceptor->intercept($request, $next);
         }
 
         return $next($request);
@@ -52,6 +64,7 @@ final class InterceptorPipeline
         return $this->interceptors === [];
     }
 
+    #[\Override]
     public function count(): int
     {
         return count($this->interceptors);

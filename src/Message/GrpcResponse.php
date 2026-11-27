@@ -7,33 +7,46 @@ namespace KaririCode\Grpc\Message;
 use KaririCode\Grpc\Enum\StatusCode;
 
 /**
- * Immutable gRPC response message.
+ * The answer to a call: the serialized response message, the status, and
+ * the metadata sent as response headers and as trailers. A failed call
+ * normally carries no message; the transport then sends a trailers-only
+ * response with grpc-status and grpc-message.
  *
- * ARFA 1.3 P1 (Immutable State Transformation): all with* methods
- * return a new instance.
+ * ARFA 1.3: P1 (immutable; with*() returns a new instance). Spec V4.3.3:
+ * final readonly.
  *
- * Spec V4.0: final readonly class with static factories for
- * common outcomes.
+ * Preconditions: none.
  *
- * Carries the response payload, headers (initial metadata), trailers
- * (trailing metadata), and the terminal gRPC status.
+ * Thread-safety: immutable; safe to share.
  *
- * @see https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md
+ * Side effects: none.
+ *
+ * Example:
+ *
+ *     return GrpcResponse::ok((new JsonCodec())->encode(['total' => 42]));
+ *     return GrpcResponse::error(Status::invalidArgument('quantity must be positive'));
+ *
+ * References: gRPC over HTTP/2 (Responses, Trailers-Only); ADR-002.
+ *
+ * @see https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md#responses
  */
 final readonly class GrpcResponse
 {
-    /**
-     * @param array<string, mixed> $payload  Decoded response message fields
-     * @param Status               $status   Terminal gRPC status
-     * @param Metadata             $headers  Initial metadata (sent before payload)
-     * @param Metadata             $trailers Trailing metadata (sent with status)
-     */
     public function __construct(
-        public array $payload = [],
+        public string $message = '',
         public Status $status = new Status(StatusCode::Ok),
         public Metadata $headers = new Metadata(),
         public Metadata $trailers = new Metadata(),
-    ) {
+    ) {}
+
+    public static function ok(string $message = '', Metadata $headers = new Metadata()): self
+    {
+        return new self($message, Status::ok(), $headers);
+    }
+
+    public static function error(Status $status, Metadata $trailers = new Metadata()): self
+    {
+        return new self('', $status, trailers: $trailers);
     }
 
     public function isOk(): bool
@@ -41,43 +54,23 @@ final readonly class GrpcResponse
         return $this->status->isOk();
     }
 
-    public function withPayload(array $payload): self
+    public function withMessage(string $message): self
     {
-        return new self($payload, $this->status, $this->headers, $this->trailers);
+        return new self($message, $this->status, $this->headers, $this->trailers);
     }
 
     public function withStatus(Status $status): self
     {
-        return new self($this->payload, $status, $this->headers, $this->trailers);
+        return new self($this->message, $status, $this->headers, $this->trailers);
     }
 
     public function withHeaders(Metadata $headers): self
     {
-        return new self($this->payload, $this->status, $headers, $this->trailers);
+        return new self($this->message, $this->status, $headers, $this->trailers);
     }
 
     public function withTrailers(Metadata $trailers): self
     {
-        return new self($this->payload, $this->status, $this->headers, $trailers);
-    }
-
-    // ── Factories ────────────────────────────────────────────────────────
-
-    /**
-     * @param array<string, mixed> $payload
-     */
-    public static function ok(array $payload = [], Metadata $headers = new Metadata()): self
-    {
-        return new self($payload, Status::ok(), $headers);
-    }
-
-    public static function error(Status $status, Metadata $trailers = new Metadata()): self
-    {
-        return new self([], $status, trailers: $trailers);
-    }
-
-    public static function unimplemented(string $service, string $method): self
-    {
-        return self::error(Status::unimplemented($service, $method));
+        return new self($this->message, $this->status, $this->headers, $trailers);
     }
 }

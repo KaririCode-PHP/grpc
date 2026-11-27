@@ -4,50 +4,53 @@ declare(strict_types=1);
 
 namespace KaririCode\Grpc\Integration;
 
+use KaririCode\Grpc\Exception\UnsupportedRequestException;
+use KaririCode\Grpc\Message\GrpcRequest;
 use KaririCode\Router\Contract\RequestNormalizer;
 use KaririCode\Router\Core\NormalizedRequest;
-use KaririCode\Grpc\Message\GrpcRequest;
 
 /**
- * Bridges gRPC requests into Router V4.1 string-based matching.
+ * Lets kariricode/router route gRPC calls: a request becomes the router
+ * request with the call type as its method (UNARY, SERVER_STREAM, ...) and
+ * its :path as the URI, so one route table can map "/shop.Cart/AddItem" to
+ * a handler beside HTTP, WebSocket and SSE routes.
  *
- * ARFA 1.3 P4 (Protocol Agnosticism): implements the
- * {@see RequestNormalizer} contract from kariricode/router. This class
- * lives in kariricode/grpc (not in Router) so the Router package has
- * zero knowledge of gRPC types.
+ * ARFA 1.3: P4 (the router stays protocol-agnostic). Spec V4.3.3: final;
+ * the `object` parameters are the router's RequestNormalizer signature.
  *
- * Spec V4.0: final class, zero state, pure transformation.
+ * Preconditions: normalize() takes what canNormalize() accepted
+ * (UnsupportedRequestException 1950 otherwise).
  *
- * Mapping convention (gRPC over HTTP/2 §2):
- *   method   → CallType router method ("UNARY", "SERVER_STREAM", etc.)
- *   uri      → full gRPC path (/{service}/{method})
- *   original → the {@see GrpcRequest} object for handler-level access
+ * Thread-safety: stateless; safe to share.
  *
- * Route registration example:
- *   $router->route('UNARY', '/myapp.v1.UserService/GetUser', $handler);
- *   $router->route('SERVER_STREAM', '/myapp.v1.UserService/ListUsers', $handler);
+ * Side effects: none.
  *
- * Dependency direction: Grpc → Router (never reversed).
+ * Example:
  *
- * @see \KaririCode\Router\Contract\RequestNormalizer
- * @see \KaririCode\Router\Core\NormalizedRequest
- * @see https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md
+ *     $routes->route([CallType::Unary->routerMethod()], '/shop.Cart/AddItem', AddItem::class);
+ *     $normalized = (new GrpcNormalizer())->normalize($request);
+ *     $match = $routes->match($normalized->method, $normalized->uri);
+ *
+ * References: kariricode/router RequestNormalizer and NormalizedRequest
+ * (its ADR-002); gRPC over HTTP/2 (Path); ADR-001.
+ *
+ * @see https://github.com/KaririCode-PHP/router
  */
 final class GrpcNormalizer implements RequestNormalizer
 {
+    #[\Override]
     public function canNormalize(object $request): bool
     {
         return $request instanceof GrpcRequest;
     }
 
+    #[\Override]
     public function normalize(object $request): NormalizedRequest
     {
-        assert($request instanceof GrpcRequest);
+        if (!$request instanceof GrpcRequest) {
+            throw UnsupportedRequestException::notAGrpcRequest();
+        }
 
-        return new NormalizedRequest(
-            method: $request->callType->routerMethod(),
-            uri: $request->path(),
-            original: $request,
-        );
+        return new NormalizedRequest($request->callType->routerMethod(), $request->path(), $request);
     }
 }

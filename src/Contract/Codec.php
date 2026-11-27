@@ -5,38 +5,44 @@ declare(strict_types=1);
 namespace KaririCode\Grpc\Contract;
 
 /**
- * Codec for gRPC message serialization/deserialization.
+ * Turns a message between its wire bytes and an array: the content
+ * subtype of application/grpc+{name}. Codec\JsonCodec implements
+ * application/grpc+json; protobuf messages are decoded by the classes
+ * protoc generates, from GrpcRequest::$message.
  *
- * ARFA 1.3 P2 (Reactive Flow Composition): codecs are pluggable
- * stages in the request/response pipeline.
+ * ARFA 1.3: P4 (the serialization stays outside the dispatch). Spec
+ * V4.3.3: an interface with no state.
  *
- * Spec V4.0 §1.3: interface without "Interface" suffix — implementations
- * MUST be stateless — a single codec instance is shared across all
- * requests for a given content-type.
+ * Preconditions: decode() refuses bytes that are not a message of its
+ * format, and encode() an array it cannot write; both with
+ * KaririCode\Grpc\Exception\InvalidMessageException.
  *
- * @see https://grpc.io/docs/guides/concepts/#codecs
+ * Thread-safety: implementations hold no per-call state.
+ *
+ * Side effects: none.
+ *
+ * Example:
+ *
+ *     $codec = new JsonCodec();
+ *     $request = $codec->decode($grpcRequest->message);
+ *     return GrpcResponse::ok($codec->encode(['id' => $id]));
+ *
+ * References: gRPC over HTTP/2 (Content-Type); ADR-002.
+ *
+ * @see https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md#requests
  */
 interface Codec
 {
-    /**
-     * Content-type sub-type identifier (e.g. "proto", "json").
-     * Used in the content-type header: application/grpc+{name}.
-     */
+    /** The content subtype: "json" for application/grpc+json. */
     public function name(): string;
 
     /**
-     * Serialize a message to its wire format.
-     *
-     * @param array<string, mixed> $message Associative array of field values
-     * @return string Binary payload
+     * @param array<array-key, mixed> $message
      */
     public function encode(array $message): string;
 
     /**
-     * Deserialize a wire-format payload into an associative array.
-     *
-     * @param string $data Binary payload
-     * @return array<string, mixed>
+     * @return array<array-key, mixed>
      */
     public function decode(string $data): array;
 }
