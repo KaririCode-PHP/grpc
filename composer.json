@@ -1,28 +1,39 @@
 {
     "name": "kariricode/grpc",
-    "description": "Pure PHP gRPC framework \u2014 zero extensions, protocol-agnostic router integration, interceptor pipeline.",
+    "description": "gRPC server layer for PHP 8.4: services, interceptors, deadlines, status mapping, length-prefixed message framing, client-certificate trust and kariricode/router integration.",
     "type": "library",
     "license": "MIT",
     "keywords": [
+        "kariricode",
         "grpc",
         "rpc",
-        "protobuf",
         "http2",
-        "kariricode",
-        "arfa"
+        "interceptor",
+        "router"
     ],
-    "homepage": "https://kariricode.org",
-    "minimum-stability": "stable",
-    "require": {
-        "php": ">=8.4"
+    "homepage": "https://github.com/KaririCode-PHP/grpc",
+    "authors": [
+        {
+            "name": "Walmir Silva",
+            "email": "walmir.silva@kariricode.org",
+            "homepage": "https://kariricode.org",
+            "role": "Lead Architect"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/KaririCode-PHP/grpc/issues",
+        "source": "https://github.com/KaririCode-PHP/grpc",
+        "security": "https://github.com/KaririCode-PHP/grpc/security/policy"
     },
-    "require-dev": {
-        "phpunit/phpunit": "^11.0"
+    "require": {
+        "php": "^8.4",
+        "kariricode/exception": "^2.0.2",
+        "kariricode/http": "^4.0",
+        "kariricode/router": "^4.1",
+        "psr/clock": "^1.0"
     },
     "suggest": {
-        "kariricode/router": "^4.1 \u2014 Enables unified routing for gRPC + HTTP + WebSocket + SSE",
-        "ext-protobuf": "For native Protocol Buffers serialization performance",
-        "ext-zlib": "For gzip message compression"
+        "ext-openssl": "Integration\\MutualTlsInterceptor reads the PEM a proxy forwards"
     },
     "autoload": {
         "psr-4": {
@@ -35,12 +46,64 @@
         }
     },
     "config": {
-        "sort-packages": true
+        "sort-packages": true,
+        "optimize-autoloader": true
     },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
     "extra": {
-        "arfa": {
-            "level": 1,
-            "version": "1.3"
+        "kariricode": {
+            "arfa": {
+                "version": "1.3",
+                "level": 1
+            },
+            "asvs": {
+                "version": "5.0",
+                "level": 1
+            },
+            "spec": "4.3.3",
+            "error-code-range": "GRPC 1900–1999"
+        },
+        "branch-alias": {
+            "dev-main": "4.x-dev"
         }
+    },
+    "scripts": {
+        "test": "kcode test",
+        "test-unit": "kcode test --testsuite=unit",
+        "test-conformance": "kcode test --testsuite=conformance",
+        "phpstan": "kcode run phpstan analyse --no-progress --memory-limit=1G",
+        "psalm": "kcode run psalm --no-cache",
+        "complexity": "@php tools/complexity.php src",
+        "mutation": [
+            "Composer\\Config::disableProcessTimeout",
+            "kcode run infection --threads=max --no-progress --show-mutations"
+        ],
+        "security": [
+            "@composer audit --locked",
+            "@composer audit --locked --working-dir=.kcode",
+            "@php tools/secret-scan.php"
+        ],
+        "sbom": "@php tools/sbom.php sbom.cdx.json",
+        "cs-check": "kcode cs:fix --check",
+        "cs-fix": "kcode cs:fix",
+        "check": [
+            "@cs-check",
+            "@phpstan",
+            "@psalm",
+            "@complexity",
+            "@test",
+            "@mutation"
+        ]
+    },
+    "scripts-descriptions": {
+        "test": "All suites (unit, conformance)",
+        "phpstan": "PHPStan at level max",
+        "psalm": "Psalm at errorLevel 1",
+        "complexity": "Spec V4.3.3 §13 budgets: cyclomatic, nesting, parameters",
+        "mutation": "Infection, MSI and covered MSI >= 80",
+        "security": "composer audit of the runtime and the toolchain, and a secret scan",
+        "sbom": "CycloneDX 1.5 SBOM from composer.lock",
+        "check": "Every gate CI runs, in order"
     }
 }
