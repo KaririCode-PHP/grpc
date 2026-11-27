@@ -1,0 +1,46 @@
+{
+    "name": "kariricode/grpc",
+    "description": "Pure PHP gRPC framework \u2014 zero extensions, protocol-agnostic router integration, interceptor pipeline.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": [
+        "grpc",
+        "rpc",
+        "protobuf",
+        "http2",
+        "kariricode",
+        "arfa"
+    ],
+    "homepage": "https://kariricode.org",
+    "minimum-stability": "stable",
+    "require": {
+        "php": ">=8.4"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0"
+    },
+    "suggest": {
+        "kariricode/router": "^4.1 \u2014 Enables unified routing for gRPC + HTTP + WebSocket + SSE",
+        "ext-protobuf": "For native Protocol Buffers serialization performance",
+        "ext-zlib": "For gzip message compression"
+    },
+    "autoload": {
+        "psr-4": {
+            "KaririCode\\Grpc\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "KaririCode\\Grpc\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "extra": {
+        "arfa": {
+            "level": 1,
+            "version": "1.3"
+        }
+    }
+}
