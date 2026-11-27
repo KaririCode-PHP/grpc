@@ -1,23 +1,13 @@
 # KaririCode gRPC
 
-PHP 8.4+ gRPC server framework with interceptor pipeline, dual codec support (JSON/Protobuf), immutable messages, deadline enforcement, 17 status codes, and Router V4.1 integration.
+The server layer of gRPC for PHP 8.4: services and method descriptors, an
+interceptor pipeline, a dispatcher that maps every outcome to a gRPC status
+and enforces deadlines, the wire rules a transport needs (length-prefixed
+messages, grpc-timeout, grpc-message, metadata), client-certificate trust,
+and the bridge to [kariricode/router](https://github.com/KaririCode-PHP/router).
+HTTP/2 itself belongs to the transport that carries the calls.
 
-## Overview
-
-KaririCode gRPC provides the server-side application layer for gRPC services. It handles service registration, interceptor composition, codec selection, deadline enforcement, and structured error responses. Transport (HTTP/2 framing) is delegated to infrastructure.
-
-## Features
-
-- **Interceptor pipeline** — onion-model middleware for auth, logging, deadlines, compression
-- **Dual codec** — JSON and Protobuf with per-request content-type selection
-- **Immutable messages** — `GrpcRequest`, `GrpcResponse`, `Metadata`, `Status` are `final readonly`
-- **17 status codes** — full gRPC specification compliance
-- **4 call types** — Unary, ServerStream, ClientStream, BidiStream
-- **Deadline enforcement** — automatic timeout detection before and after handler invocation
-- **Structured errors** — `ServiceException` with typed details (google.rpc.Status)
-- **Router integration** — `GrpcNormalizer` bridges to Router V4.1 protocol-agnostic matching
-- **mTLS interceptor** — client certificate validation via kariricode/authenticator
-- **Zero external deps** — only `kariricode/contract` required
+[![CI](https://github.com/KaririCode-PHP/grpc/actions/workflows/ci.yml/badge.svg)](https://github.com/KaririCode-PHP/grpc/actions/workflows/ci.yml)
 
 ## Installation
 
@@ -25,93 +15,170 @@ KaririCode gRPC provides the server-side application layer for gRPC services. It
 composer require kariricode/grpc
 ```
 
-## Quick Start
+Requires PHP 8.4. ext-openssl is suggested: with it, a PEM forwarded by a
+proxy gives the certificate's validity dates.
+
+## A service
 
 ```php
-use KaririCode\Grpc\Enum\StatusCode;
+use KaririCode\Grpc\Codec\JsonCodec;
+use KaririCode\Grpc\Contract\ServiceHandler;
 use KaririCode\Grpc\Handler\UnaryHandler;
-use KaririCode\Grpc\Interceptor\InterceptorPipeline;
-use KaririCode\Grpc\Message\{GrpcRequest, GrpcResponse, Metadata, Status};
+use KaririCode\Grpc\Message\GrpcRequest;
+use KaririCode\Grpc\Message\GrpcResponse;
+use KaririCode\Grpc\Message\Status;
+use KaririCode\Grpc\Server\MethodDescriptor;
+use KaririCode\Grpc\Server\ServiceRegistry;
 
-// Define a service handler
-$handler = new UnaryHandler(function (GrpcRequest $request): GrpcResponse {
-    $name = $request->payload['name'] ?? 'World';
-    return new GrpcResponse(
-        Status::ok(),
-        ['message' => "Hello, {$name}!"],
-    );
-});
+final class CartService implements ServiceHandler
+{
+    public function serviceName(): string
+    {
+        return 'shop.Cart';
+    }
 
-// Compose with interceptors
-$pipeline = new InterceptorPipeline([$authInterceptor, $loggingInterceptor]);
-$response = $pipeline->handle($request, $handler);
+    public function handle(string $method, GrpcRequest $request): GrpcResponse
+    {
+        $codec = new JsonCodec();
+        $item = $codec->decode($request->message);   // or: (new AddItemRequest())->mergeFromString($request->message)
+
+        return ($item['quantity'] ?? 0) > 0
+            ? GrpcResponse::ok($codec->encode(['added' => $item['sku']]))
+            : GrpcResponse::error(Status::invalidArgument('quantity must be positive'));
+    }
+}
+
+$registry = new ServiceRegistry();
+$registry->register(new CartService(), new MethodDescriptor('shop.Cart', 'AddItem'));
+
+$handler = new UnaryHandler($registry, onError: static fn(\Throwable $e, GrpcRequest $r) => $logger->error($e->getMessage(), ['path' => $r->path()]));
+$response = $handler->handle($request);
 ```
+
+The message is the bytes the client sent; protobuf services decode them
+with the classes protoc generates. An unknown service or undeclared method
+gets UNIMPLEMENTED, a passed deadline DEADLINE_EXCEEDED, and an unexpected
+exception INTERNAL with the fixed message "Internal error": the exception
+goes to `onError`, never to the client. To end a call from deep inside,
+throw `StatusException::failed(Status::notFound('No such cart'))`.
 
 ## Interceptors
 
 ```php
 use KaririCode\Grpc\Contract\Interceptor;
+use KaririCode\Grpc\Handler\InterceptorPipeline;
 
-final class LoggingInterceptor implements Interceptor
+final class RequireApiKey implements Interceptor
 {
-    public function intercept(GrpcRequest $request, callable $next): GrpcResponse
+    public function __construct(private readonly string $key) {}
+
+    public function intercept(GrpcRequest $request, \Closure $next): GrpcResponse
     {
-        $start = microtime(true);
-        $response = $next($request);
-        $elapsed = microtime(true) - $start;
-        // log: $request->path(), $response->status->code, $elapsed
-        return $response;
+        return hash_equals($this->key, $request->metadata->get('x-api-key') ?? '')
+            ? $next($request)
+            : GrpcResponse::error(Status::unauthenticated());
     }
 }
+
+$pipeline = (new InterceptorPipeline())->with(new RequireApiKey($key));   // the first is the outermost
+$handler = new UnaryHandler($registry, $pipeline);
 ```
 
-## Status Codes
+## In a transport
 
 ```php
-use KaririCode\Grpc\Enum\StatusCode;
-use KaririCode\Grpc\Exception\ServiceException;
+use KaririCode\Grpc\Message\Metadata;
+use KaririCode\Grpc\Wire\MessageFramer;
+use KaririCode\Grpc\Wire\StatusMessage;
+use KaririCode\Grpc\Wire\Timeout;
 
-// Structured error with details
-throw ServiceException::invalidArgument('email', 'must be valid');
-throw ServiceException::notFound('User', '42');
-throw ServiceException::deadlineExceeded(5.5);
+$framer = new MessageFramer();                         // 4 MiB receive limit, checked from the prefix
+[$frame] = $framer->parse($body) ?? throw new \UnderflowException('incomplete message');
+$request = GrpcRequest::fromPath($headers[':path'], $frame->message, new Metadata($customHeaders))
+    ->withPeer($remoteIp);
+
+if (isset($headers['grpc-timeout'])) {
+    $request = $request->withDeadline(Timeout::deadline($headers['grpc-timeout'], $clock->now()));
+}
+
+$response = $handler->handle($request);
+$body = $framer->frame($response->message);
+$trailers = ['grpc-status' => (string) $response->status->code->value, 'grpc-message' => StatusMessage::encode($response->status->message)];
 ```
 
-## Router Integration
+`Metadata` refuses keys outside 0-9, a-z, `_`, `-`, `.`, keys that start
+with `grpc-`, and control characters in ASCII values, so no value can split
+the headers or forge `grpc-status`.
+
+## Client certificates (mTLS)
 
 ```php
+use KaririCode\Grpc\Integration\MutualTlsInterceptor;
+use KaririCode\Http\Security\TlsConfiguration;
+
+$tls = TlsConfiguration::mutual($cert, $key, $ca)
+    ->withTrustedProxies(['10.0.0.0/8'])                // Envoy or nginx in front
+    ->withAllowedDns(['CN=billing,O=Acme']);
+$pipeline = (new InterceptorPipeline())->with(new MutualTlsInterceptor($tls));
+
+// in a handler
+$request->attribute(MutualTlsInterceptor::CLIENT_CERTIFICATE)?->commonName();
+```
+
+The certificate counts only when the transport verified it (the
+`PEER_CERTIFICATE` attribute) or when a trusted proxy forwards it; from
+anyone else, the proxy metadata is removed.
+
+## Routing
+
+```php
+use KaririCode\Grpc\Enum\CallType;
 use KaririCode\Grpc\Integration\GrpcNormalizer;
+use KaririCode\Router\Core\RouteRegistry;
 
-$normalizer = new GrpcNormalizer();
-$router->route('GRPC_UNARY', '/mypackage.UserService/GetUser', $handler);
+$routes = (new RouteRegistry())->route([CallType::Unary->routerMethod()], '/shop.Cart/AddItem', 'cart.add');
+$normalized = (new GrpcNormalizer())->normalize($request);
+$match = $routes->match($normalized->method, $normalized->uri);
 ```
 
-## Error Handling
+## Errors
 
-| Exception Factory | Status Code | When |
+Each failure is a final exception in a kariricode/contract family, with a code
+from block 1900–1999 (prefix `GRPC`):
+
+| Exception | Family | Codes |
 |---|---|---|
-| `invalidArgument(field, reason)` | InvalidArgument (3) | Bad input |
-| `notFound(resource, id)` | NotFound (5) | Missing entity |
-| `alreadyExists(resource, id)` | AlreadyExists (6) | Duplicate |
-| `permissionDenied(resource, action)` | PermissionDenied (7) | Forbidden |
-| `deadlineExceeded(seconds)` | DeadlineExceeded (4) | Timeout |
-| `internal(message, cause)` | Internal (13) | Server error |
-| `unimplemented(service, method)` | Unimplemented (12) | Missing RPC |
+| `StatusException` | Runtime, with the `Status` the client receives | 1900 |
+| `InvalidMessageException` | Validation | 1910–1920 |
+| `FrameException` | Protocol, with the `StatusCode` to answer | 1930–1931 |
+| `InvalidConfigurationException` | Configuration | 1940–1945 |
+| `UnsupportedRequestException` | Validation | 1950 |
 
-## Testing
+Messages name the rule that failed and never repeat a value the client sent.
+
+## Development
 
 ```bash
-./vendor/bin/phpunit
+composer install
+kcode init          # KaririCode Devkit 1.2.1: installs the pinned toolchain into .kcode/
+composer check      # style, PHPStan (max), Psalm (1), complexity, tests, mutation
+composer security   # composer audit (runtime and toolchain), secret scan
 ```
 
 ## Documentation
 
-| Document | Location |
+| Document | Topic |
 |---|---|
-| ADR-001: Interceptor Pipeline | `docs/adr/ADR-001-interceptor-pipeline.md` |
-| ADR-002: Dual Codec Strategy | `docs/adr/ADR-002-dual-codec.md` |
-| SPEC-001: Architecture | `docs/spec/SPEC-001-grpc-architecture.md` |
+| [SPEC-001](docs/spec/SPEC-001-grpc-architecture.md) | architecture and behaviour |
+| [ADR-001](docs/adr/ADR-001-dispatch-and-interceptors.md) | dispatch, interceptors, deadlines, statuses |
+| [ADR-002](docs/adr/ADR-002-message-model-and-codecs.md) | message bytes and codecs |
+| [ADR-003](docs/adr/ADR-003-exception-families-and-code-block.md) | exception families, codes 1900–1999 |
+| [ADR-004](docs/adr/ADR-004-toolchain-through-kcode.md) | quality gates |
+| [ADR-005](docs/adr/ADR-005-client-certificate-trust.md) | client-certificate trust |
+| [ADR-006](docs/adr/ADR-006-wire-format.md) | framing, timeouts, status messages, metadata |
+| [Quality report](docs/quality/QD-V433-COMPLIANCE.md) | Spec V4.3.3 gates and deviations |
+| [Security policy](SECURITY.md) | reporting, threat model |
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT. See [LICENSE](LICENSE).
